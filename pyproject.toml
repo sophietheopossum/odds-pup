@@ -1,0 +1,84 @@
+[project]
+name = "odds-pup"
+version = "0.1.0.dev0"
+description = "A lightweight desktop ledger for matched betting: qualifying bets, free bets and lay hedges."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+authors = [{ name = "Sophie" }]
+keywords = ["matched-betting", "ledger", "desktop", "pyside6"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: X11 Applications :: Qt",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Office/Business :: Financial",
+]
+dependencies = [
+  "PySide6>=6.9",
+  "platformdirs>=4.3",
+]
+
+[project.scripts]
+odds-pup = "odds_pup.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "hypothesis>=6.120",
+  "pytest-qt>=4.4",
+  "ruff>=0.9",
+  "mypy>=1.14",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/odds_pup"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "ANN", "N", "PL", "TC", "PT"]
+ignore = [
+  "ANN401",  # Any is occasionally the honest type at the Qt boundary
+  "PLR2004", # magic numbers are the point in a calculator
+  "PLR0913", # domain constructors legitimately take many arguments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "PLR", "PT011"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+files = ["src/odds_pup/core", "src/odds_pup/storage", "tests"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "odds_pup.ui.*"
+strict = false
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+xfail_strict = true
