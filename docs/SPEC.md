@@ -159,7 +159,9 @@ form create venues on the fly. Offer: `id, venue_id, title, notes`. Both are min
      and Decimal odds, then rounded to whole pence.
   3. Commission for a venue group in an outcome is `HALF_UP(net_positive_gross × c)` in pence (§5.3).
   4. Liability `L × (O − 1)` is rounded to whole pence for display and storage.
-  5. Rating is quantized to 2 dp for display only.
+  5. Rating and book percentage are quantized to 2 dp for display only. Book percentage is
+     computed with exact rationals and rounded once, so an exact tie rounds up and the result
+     does not depend on the order of the prices.
 - Decimal arithmetic uses a context with precision 28. No float ever enters a calculation.
 
 ---
@@ -308,6 +310,9 @@ net `943`; total −57. Guaranteed −58. Rating `100 × 2 × 0.98 / 2.08 = 94.2
 F12: three-way market, odds `2.50 / 3.40 / 3.10`, target return 3000 → stakes `1200 / 882 / 968`,
 total 3050, P/L vector `[−50, −51, −49]`, guaranteed −51, book 101.67%.
 
+F12b: same shape around a free bet. SNR free stake 1000 on selection 0 at `3.0`, cash legs at
+`3.4` and `3.1` → stakes `1000 / 588 / 645`, P/L vector `[767, 766, 767]`, guaranteed 766.
+
 ### 7.4 Settlement of F1 (legs: back 1000 @ 2.00 at a bookmaker, lay 962 @ 2.10 at 2%)
 
 | # | Back leg | Lay leg | Realised |
@@ -323,8 +328,13 @@ total 3050, P/L vector `[−50, −51, −49]`, guaranteed −51, book 101.67%.
 ### 7.5 Commission rounding
 
 F16: lay 975 pence at 200 bp wins: commission `HALF_UP(19.5) = 20`, net 955.
+F16b: lay 925 pence at 200 bp wins: commission `HALF_UP(18.5) = 19`, net 906 (half-even rounding
+would give 907; this fixture tells the two apart).
 
 ### 7.6 Odds parsing
+
+Whole-number prices never come back in exponent form: `"9/1"` → `10` (`str` is `10`, storage form
+`10.0000`).
 
 `"11/8"` → `2.375`; `"100/30"` → `4.3333`; `"1/1"` → `2`; `"evens"`, `"EVS"`, `"Evens"` → `2`;
 `"2.1"` → `2.1`; `"1.00"`, `"0/1"`, `"2,10"`, `"2.12345"`, `"abc"` → rejected.
@@ -607,7 +617,9 @@ stays importable once import exists. Import is deferred until a real sample shee
 
 Hard errors (the form cannot save):
 
-- odds ≤ 1, or more than 4 dp, or unparsable
+- odds ≤ 1, or above 10000, or more than 4 dp, or unparsable (ASCII digits only)
+- any money amount above £10,000,000,000 in magnitude (a guard that keeps Decimal arithmetic
+  exact at precision 28; not a business limit)
 - back stake ≤ 0 on a new bet; any stake < 0
 - commission outside `0 ≤ bp < 10000`
 - `selection_index ≥ market_outcomes`; two legs in one venue group with different commission
@@ -643,6 +655,7 @@ All decided 2026-09-12 with the developer, taking the recommended defaults.
 | D10 | Offers: nullable `offer_id` and `parent_bet_id` plus a minimal offers table. Bankroll and account balances out of scope for v0.1. |
 | D11 | No existing data to import. CSV export in v0.1; import when a sample sheet exists. Backfill of settled bets with past dates supported in the New Bet form. |
 | D12 | Housekeeping first: short CLAUDE.md pointing here, README, MIT LICENSE, .gitignore excluding ledger files; data in the XDG data dir with 0600 permissions, single-instance lock, rotating backups, zero network. Agent commits on feature branches; the developer signs and merges. Git author name follows the current config (Sophie). |
+| D14 | 2026-09-13, after adversarial review of the core: odds capped at 10000 and money at £10bn as precision guards; venue grouping key is the trimmed, case-folded name; book percentage computed exactly; the Settle helper is leg-based with outcomes BACK_WON / LAY_WON / VOID and refuses to overwrite a recorded result; commission percent parsing lives in core. |
 | D13 | Commission is netted per venue within a bet (an approximation of the per-market netting exchanges apply; bets are not netted against each other in v0.1). For a single lay leg this equals the per-bet formula up to the F16 rounding; it matters for §16.1. |
 
 ---
