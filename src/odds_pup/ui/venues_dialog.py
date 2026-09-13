@@ -146,6 +146,7 @@ class VenuesDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAccessibleName("Venues")
+        self.table.setTabKeyNavigation(False)
         layout.addWidget(self.table, 1)
         row = QHBoxLayout()
         self.add_button = QPushButton("&Add…")
@@ -154,6 +155,8 @@ class VenuesDialog(QDialog):
         for button in (self.add_button, self.edit_button, self.delete_button):
             row.addWidget(button)
         row.addStretch(1)
+        for button in (self.add_button, self.edit_button, self.delete_button):
+            button.setAutoDefault(False)
         close = QPushButton("Close")
         row.addWidget(close)
         layout.addLayout(row)
@@ -163,9 +166,10 @@ class VenuesDialog(QDialog):
         self.delete_button.clicked.connect(self.delete_selected)
         close.clicked.connect(self.accept)
         self.table.itemSelectionChanged.connect(self._update_buttons)
-        self.table.doubleClicked.connect(lambda _index: self.edit_selected())
+        self.table.activated.connect(lambda _index: self.edit_selected())  # Enter or double-click
         self._venues: list[Venue] = []
         self._usage: dict[str, int] = {}
+        close.setDefault(True)
         self.reload()
 
     def reload(self, select_id: str | None = None) -> None:

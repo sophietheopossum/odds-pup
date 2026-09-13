@@ -50,7 +50,7 @@ from odds_pup.core import (
     settle_two_way,
     two_way_position,
 )
-from odds_pup.storage import BetRecord, NewBet, NewLeg, Offer, Venue, utc_now
+from odds_pup.storage import BetRecord, NewBet, NewLeg, Offer, StorageError, Venue, utc_now
 from odds_pup.ui.format import (
     RESULT_LABELS,
     TYPE_LABELS,
@@ -141,10 +141,13 @@ class BetDialog(QDialog):
         mode: BetDialogMode = BetDialogMode.NEW,
         prefill: BetRecord | None = None,
         clock: Callable[[], datetime] = utc_now,
+        save: Callable[[BetDialogResult], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.mode = mode
+        self._save = save
+        self._prefilled = prefill is not None
         self._venues = {v.name.casefold(): v for v in venues}
         self._offers = list(offers)
         self._parents = list(parent_candidates)
@@ -194,12 +197,15 @@ class BetDialog(QDialog):
         form.addRow("Back &odds", self.back_odds)
 
         self.exchange = _venue_combo("Exchange", exchanges)
-        self.commission = _line("Commission %", "2")
+        self.commission = _line("Commission %", "e.g. 2 (0 if none)")
         self.lay_odds = _line("Lay odds", "2.10")
         lay_row = QHBoxLayout()
         self.lay_stake = _line("Lay stake", "")
         self.use_suggested = QPushButton("Use suggested")
-        self.use_suggested.setAccessibleName("Use the suggested lay stake")
+        self.use_suggested.setAutoDefault(False)
+        self.use_suggested.setToolTip(
+            "Replace the lay stake with the one that equalises both outcomes"
+        )
         lay_row.addWidget(self.lay_stake, 1)
         lay_row.addWidget(self.use_suggested)
         form.addRow("E&xchange", self.exchange)
@@ -240,7 +246,16 @@ class BetDialog(QDialog):
         self.notes = QPlainTextEdit()
         self.notes.setAccessibleName("Notes")
         self.notes.setPlaceholderText("Notes (never passwords)")
-        self.notes.setFixedHeight(60)
+        self.notes.setTabChangesFocus(True)
+        line = self.notes.fontMetrics().lineSpacing()
+        margins = self.notes.contentsMargins()
+        self.notes.setFixedHeight(
+            3 * line
+            + int(2 * self.notes.document().documentMargin())
+            + margins.top()
+            + margins.bottom()
+            + 2 * self.notes.frameWidth()
+        )
         form.addRow("&Notes", self.notes)
         self.needs_review = QCheckBox("Needs review")
         self.needs_review.setAccessibleName("Flag this bet for review")
@@ -287,28 +302,31 @@ class BetDialog(QDialog):
             ("Guaranteed", self.guaranteed_label),
             ("Rating", self.rating_label),
         )
+        self._captions: dict[int, str] = {}
         for row, (caption, figure) in enumerate(figures):
             grid.addWidget(QLabel(caption), row, 0)
             grid.addWidget(figure, row, 1)
-            figure.setAccessibleName(caption)
+            self._captions[id(figure)] = caption
             figure.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.warnings_label = QLabel("")
         self.warnings_label.setWordWrap(True)
-        self.warnings_label.setAccessibleName("Warnings")
         grid.addWidget(self.warnings_label, 5, 0, 1, 2)
         outer.addWidget(panel)
 
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
-        self.error_label.setAccessibleName("Validation message")
         outer.addWidget(self.error_label)
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
         self.save_button = self.buttons.button(QDialogButtonBox.StandardButton.Save)
-        self.save_button.setDefault(True)
         outer.addWidget(self.buttons)
+        # Register Save as the default only once it belongs to the dialog; otherwise Qt picks
+        # the first auto-default button (Use suggested) and Enter overwrites the lay stake.
+        self.save_button.setDefault(True)
+        cancel = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel.setAutoDefault(False)
 
         # wiring
         for widget in (
@@ -331,10 +349,13 @@ class BetDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
 
     def _apply_settings(self, settings: UiSettings) -> None:
-        if settings.last_bookmaker:
-            self.bookmaker.setCurrentText(settings.last_bookmaker)
-        if settings.last_exchange:
-            self.exchange.setCurrentText(settings.last_exchange)
+        """Prefill the last venues used, but only while they still exist (they may be renamed)."""
+        bookmaker = self._venues.get(settings.last_bookmaker.strip().casefold())
+        if bookmaker is not None:
+            self.bookmaker.setCurrentText(bookmaker.name)
+        exchange = self._venues.get(settings.last_exchange.strip().casefold())
+        if exchange is not None and exchange.kind is VenueKind.EXCHANGE:
+            self.exchange.setCurrentText(exchange.name)
             if settings.last_commission_bp is not None:
                 self.commission.setText(format_commission(settings.last_commission_bp).rstrip("%"))
 
@@ -360,9 +381,11 @@ class BetDialog(QDialog):
         self._lay_auto = False
         if bet.offer_id is not None and (index := self.offer.findData(bet.offer_id)) >= 0:
             self.offer.setCurrentIndex(index)
-        if bet.parent_bet_id is not None and (
-            (index := self.parent_bet.findData(bet.parent_bet_id)) >= 0
-        ):
+        if bet.parent_bet_id is not None:
+            index = self.parent_bet.findData(bet.parent_bet_id)
+            if index < 0:  # not among the recent qualifiers: keep the link rather than drop it
+                self.parent_bet.addItem("(current parent)", bet.parent_bet_id)
+                index = self.parent_bet.count() - 1
             self.parent_bet.setCurrentIndex(index)
         if self.mode is BetDialogMode.NEW:  # clone: fresh timestamp
             self.placed_at.setDateTime(to_qdatetime(self._clock()))
@@ -402,11 +425,15 @@ class BetDialog(QDialog):
         back_stake = parse_money(self.back_stake.text() or "0")
         back_odds = parse_odds(self.back_odds.text())
         lay_odds = parse_odds(self.lay_odds.text())
-        commission_bp = parse_commission(self.commission.text() or "0")
+        if not self.commission.text().strip():
+            raise ValidationError("Enter the exchange commission (0 if there is none).")
+        commission_bp = parse_commission(self.commission.text())
         bookmaker = self.bookmaker.currentText().strip() or "bookmaker"
         exchange = self.exchange.currentText().strip() or "exchange"
         lay_stake: Pence | None = None
-        if not self._lay_auto and self.lay_stake.text().strip():
+        if not self._lay_auto:
+            if not self.lay_stake.text().strip():
+                raise ValidationError("Enter the lay stake, or press Use suggested.")
             lay_stake = parse_money(self.lay_stake.text())
         return two_way_position(
             bet_type,
@@ -435,11 +462,11 @@ class BetDialog(QDialog):
             self.lay_stake.blockSignals(False)
         self.use_suggested.setText(f"Use suggested ({format_pence(position.suggested_lay_stake)})")
         self.use_suggested.setEnabled(not position.lay_stake_is_suggested)
-        self.liability_label.setText(format_pence(position.liability))
-        self.back_wins_label.setText(pl_text(position.pl_if_back_wins))
-        self.lay_wins_label.setText(pl_text(position.pl_if_lay_wins))
-        self.guaranteed_label.setText(pl_text(position.guaranteed))
-        self.rating_label.setText(f"{position.rating}%")
+        self._figure(self.liability_label, format_pence(position.liability))
+        self._figure(self.back_wins_label, pl_text(position.pl_if_back_wins))
+        self._figure(self.lay_wins_label, pl_text(position.pl_if_lay_wins))
+        self._figure(self.guaranteed_label, pl_text(position.guaranteed))
+        self._figure(self.rating_label, f"{position.rating}%")
         venue = self._venues.get(self.exchange.currentText().strip().casefold())
         ladder = None if venue is None or venue.ladder is None else LADDERS.get(venue.ladder)
         minimum = None if venue is None else venue.min_stake_pence
@@ -452,6 +479,8 @@ class BetDialog(QDialog):
             problems.append("Enter the bookmaker.")
         if not self.exchange.currentText().strip():
             problems.append("Enter the exchange.")
+        elif venue is not None and venue.kind is not VenueKind.EXCHANGE:
+            problems.append(f"{venue.name} is a bookmaker; lay at an exchange.")
         if self.mode is BetDialogMode.CORRECT and not self.reason.text().strip():
             problems.append("A correction needs a reason.")
         if problems:
@@ -460,9 +489,14 @@ class BetDialog(QDialog):
             self.error_label.setText("")
             self.save_button.setEnabled(True)
 
+    def _figure(self, label: QLabel, text: str) -> None:
+        label.setText(text)
+        label.setAccessibleName(f"{self._captions[id(label)]}: {text}")
+
     def _show_error(self, message: str) -> None:
         self.error_label.setText(message)
         self.save_button.setEnabled(False)
+        self.use_suggested.setEnabled(not self._lay_auto)
         for label in (
             self.liability_label,
             self.back_wins_label,
@@ -470,7 +504,7 @@ class BetDialog(QDialog):
             self.guaranteed_label,
             self.rating_label,
         ):
-            label.setText("—")
+            self._figure(label, "—")
         self.warnings_label.setText("")
 
     def position(self) -> TwoWayPosition | None:
@@ -511,15 +545,19 @@ class BetDialog(QDialog):
         return BetDialogResult(bet=bet, reason=self.reason.text().strip(), settled_at=corrected)
 
     def _accept(self) -> None:
+        """Validate, save through the callback, and close only if the save succeeded."""
         try:
-            self.result_value = self.build_result()
-        except CoreError as exc:
-            self._show_error(str(exc))
+            result = self.build_result()
+            if self._save is not None:
+                self._save(result)
+        except (CoreError, StorageError) as exc:
+            self.error_label.setText(str(exc))
             return
-        if self._settings is not None:
+        self.result_value = result
+        if self._settings is not None and self.mode is BetDialogMode.NEW and not self._prefilled:
             self._settings.last_bookmaker = self.bookmaker.currentText().strip()
             self._settings.last_exchange = self.exchange.currentText().strip()
-            self._settings.last_commission_bp = self.result_value.bet.legs[1].commission_bp or 0
+            self._settings.last_commission_bp = result.bet.legs[1].commission_bp or 0
         self.accept()
 
 
@@ -592,7 +630,8 @@ class SettleDialog(QDialog):
             row = QHBoxLayout()
             for outcome, label in OUTCOME_LABELS.items():
                 button = QPushButton(label)
-                button.setAccessibleName(label)
+                # Never the default: Enter in the per-leg editor must not settle the whole bet.
+                button.setAutoDefault(False)
                 button.clicked.connect(lambda _=False, o=outcome: self._choose(o))
                 row.addWidget(button)
                 self.outcome_buttons[outcome] = button
@@ -625,10 +664,13 @@ class SettleDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Apply).setText("Apply per-leg results")
-        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self._apply)
+        self.apply_button = buttons.button(QDialogButtonBox.StandardButton.Apply)
+        self.apply_button.setText("Apply per-leg results")
+        self.apply_button.clicked.connect(self._apply)
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
+        self.apply_button.setDefault(True)  # after it belongs to the dialog, see BetDialog
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setAutoDefault(False)
 
     def _choose(self, outcome: TwoWayOutcome) -> None:
         self.result_value = SettleRequest(
@@ -711,6 +753,8 @@ class AdjustDialog(QDialog):
         self.buttons.accepted.connect(self._accept)
         self.buttons.rejected.connect(self.reject)
         outer.addWidget(self.buttons)
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setDefault(True)
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setAutoDefault(False)
         self.set_radio.toggled.connect(self.amount.setEnabled)
 
     def build_request(self) -> AdjustRequest:

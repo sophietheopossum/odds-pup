@@ -632,7 +632,9 @@ class Repository:
         venue = self.find_venue(_require_text(new.venue, "venue", allow_empty=False))
         if venue is None:
             kind = VenueKind.EXCHANGE if side is Side.LAY else VenueKind.BOOKMAKER
-            venue = self._insert_venue(new.venue, kind, 0, None, None)
+            # a new exchange remembers the commission it was first used with
+            default_bp = new.commission_bp or 0 if kind is VenueKind.EXCHANGE else 0
+            venue = self._insert_venue(new.venue, kind, default_bp, None, None)
         elif side is Side.LAY and venue.kind is not VenueKind.EXCHANGE:
             raise IllegalActionError(
                 f"cannot lay at {venue.name}: it is a bookmaker, not an exchange"

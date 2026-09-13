@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QDate, QSortFilterProxyModel, Qt, QTimer
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -51,7 +51,7 @@ from odds_pup.ui.dialogs import (
     SettleRequest,
 )
 from odds_pup.ui.format import TYPE_LABELS
-from odds_pup.ui.ledger_model import SORT_ROLE, LedgerModel
+from odds_pup.ui.ledger_model import SORT_ROLE, LedgerModel, LedgerProxy
 from odds_pup.ui.settings import UiSettings
 from odds_pup.ui.summary_strip import BookmakerTable, SummaryStrip
 from odds_pup.ui.venues_dialog import VenuesDialog
@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
         self.confirm: Callable[[str, str], bool] = self._message_box_confirm
         self.setWindowTitle("odds-pup")
         self.model = LedgerModel()
-        self.proxy = QSortFilterProxyModel()
+        self.proxy = LedgerProxy()
         self.proxy.setSourceModel(self.model)
         self.proxy.setSortRole(SORT_ROLE)
         self._search_timer = QTimer(self)
@@ -190,6 +190,7 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setAccessibleName("Ledger")
+        self.table.setTabKeyNavigation(False)  # Tab leaves the ledger; arrows move rows
         self.table.setAlternatingRowColors(True)
 
         self.detail = DetailPane()
@@ -250,6 +251,8 @@ class MainWindow(QMainWindow):
         self.act_refresh = self._action("Re&fresh", "F5", self.refresh)
         self.act_quit = self._action("&Quit", "Ctrl+Q", self.close)
         self.act_about = self._action("&About odds-pup", None, self.about)
+        self.act_find = self._action("&Find…", "Ctrl+F", self.focus_search)
+        self.addAction(self.act_find)
 
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addActions([self.act_export, self.act_backup, self.act_refresh])
@@ -433,20 +436,29 @@ class MainWindow(QMainWindow):
             self.select_bet(bet_id)
 
     def _bet_dialog(
-        self, mode: BetDialogMode = BetDialogMode.NEW, prefill: BetRecord | None = None
+        self,
+        mode: BetDialogMode = BetDialogMode.NEW,
+        prefill: BetRecord | None = None,
+        save: Callable[[BetDialogResult], None] | None = None,
     ) -> BetDialog | None:
         try:
             parents = self.repo.list_bets(
                 BetFilter(bet_types=frozenset({BetType.QUALIFYING}), limit=PARENT_CANDIDATES)
             )
+            parent_id = None if prefill is None else prefill.parent_bet_id
+            if parent_id is not None and all(p.id != parent_id for p in parents):
+                parents.append(self.repo.get_bet(parent_id))  # older than the list, or deleted
+            if prefill is not None and mode is not BetDialogMode.NEW:
+                parents = [p for p in parents if p.id != prefill.id]  # not its own parent
             return BetDialog(
                 venues=self.repo.list_venues(),
                 offers=self.repo.list_offers(),
-                parent_candidates=[b for b in parents if prefill is None or b.id != prefill.id],
+                parent_candidates=parents,
                 settings=self.settings,
                 mode=mode,
                 prefill=prefill,
                 clock=self.clock,
+                save=save,
                 parent=self,
             )
         except (CoreError, StorageError) as exc:
@@ -462,20 +474,36 @@ class MainWindow(QMainWindow):
         self._changed(created.id)
         return created
 
+    def _run_create_dialog(self, prefill: BetRecord | None) -> None:
+        saved: list[BetRecord] = []
+
+        def save(result: BetDialogResult) -> None:
+            saved.append(self.repo.create_bet(result.bet))  # raises: the dialog stays open
+
+        dialog = self._bet_dialog(BetDialogMode.NEW, prefill, save)
+        if dialog is not None and dialog.exec() and saved:
+            self._changed(saved[-1].id)
+
     def new_bet(self) -> None:
-        dialog = self._bet_dialog()
-        if dialog is not None and dialog.exec() and dialog.result_value is not None:
-            self.create_bet(dialog.result_value.bet)
+        self._run_create_dialog(None)
 
     def clone_selected(self) -> None:
         bet = self.selected_bet()
-        if bet is None:
-            return
-        dialog = self._bet_dialog(BetDialogMode.NEW, bet)
-        if dialog is not None and dialog.exec() and dialog.result_value is not None:
-            self.create_bet(dialog.result_value.bet)
+        if bet is not None:
+            self._run_create_dialog(bet)
 
     def apply_edit(self, bet: BetRecord, result: BetDialogResult) -> BetRecord | None:
+        try:
+            updated = self.write_edit(bet, result)
+        except (CoreError, StorageError) as exc:
+            self._report(exc)
+            self.refresh()  # a partial success (edit saved, flag failed) must still show
+            return None
+        self._changed(updated.id)
+        return updated
+
+    def write_edit(self, bet: BetRecord, result: BetDialogResult) -> BetRecord:
+        """Store an Edit/Correct dialog result; raises CoreError or StorageError."""
         new_bet = result.bet
         changes: dict[str, object] = {
             "bet_type": new_bet.bet_type,
@@ -490,20 +518,14 @@ class MainWindow(QMainWindow):
         }
         if new_bet.placed_at is not None:
             changes["placed_at"] = new_bet.placed_at
-        try:
-            if bet.status is BetStatus.OPEN:
-                updated = self.repo.edit_bet(bet.id, **changes)
-            else:
-                if result.settled_at is not None and bet.is_settled:
-                    changes["settled_at"] = result.settled_at
-                updated = self.repo.correct_bet(bet.id, reason=result.reason or "", **changes)
-            if new_bet.needs_review != updated.needs_review:
-                updated = self.repo.set_needs_review(bet.id, new_bet.needs_review)
-        except (CoreError, StorageError) as exc:
-            self._report(exc)
-            self.refresh()  # a partial success (edit saved, flag failed) must still show
-            return None
-        self._changed(updated.id)
+        if bet.status is BetStatus.OPEN:
+            updated = self.repo.edit_bet(bet.id, **changes)
+        else:
+            if result.settled_at is not None and bet.is_settled:
+                changes["settled_at"] = result.settled_at
+            updated = self.repo.correct_bet(bet.id, reason=result.reason or "", **changes)
+        if new_bet.needs_review != updated.needs_review:
+            updated = self.repo.set_needs_review(bet.id, new_bet.needs_review, result.reason)
         return updated
 
     def edit_selected(self) -> None:
@@ -511,9 +533,14 @@ class MainWindow(QMainWindow):
         if bet is None or bet.is_deleted:
             return
         mode = BetDialogMode.EDIT if bet.status is BetStatus.OPEN else BetDialogMode.CORRECT
-        dialog = self._bet_dialog(mode, bet)
-        if dialog is not None and dialog.exec() and dialog.result_value is not None:
-            self.apply_edit(bet, dialog.result_value)
+        saved: list[BetRecord] = []
+
+        def save(result: BetDialogResult) -> None:
+            saved.append(self.write_edit(bet, result))  # raises: the dialog stays open
+
+        dialog = self._bet_dialog(mode, bet, save)
+        if dialog is not None and dialog.exec() and saved:
+            self._changed(saved[-1].id)
 
     def apply_settle(self, bet: BetRecord, request: SettleRequest) -> BetRecord | None:
         try:
@@ -598,6 +625,10 @@ class MainWindow(QMainWindow):
             self._report(exc)
             return
         self._changed(bet.id)
+
+    def focus_search(self) -> None:
+        self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.search.selectAll()
 
     def manage_venues(self) -> None:
         dialog = VenuesDialog(self.repo, show_error=self.show_error, parent=self)

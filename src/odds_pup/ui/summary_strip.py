@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -25,32 +27,45 @@ if TYPE_CHECKING:
 
 
 class StatTile(QFrame):
+    """A caption and a value. Sizes derive from the application font so system scaling applies."""
+
     def __init__(self, caption: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
+        base = QApplication.font()
+        self.caption_text = caption
         self.caption = QLabel(caption)
-        self.caption.setStyleSheet("font-size: 11px;")
+        caption_font = QFont(base)
+        caption_font.setPointSizeF(base.pointSizeF() * 0.85)
+        self.caption.setFont(caption_font)
         self.value = QLabel("—")
-        self.value.setStyleSheet("font-size: 18px; font-weight: 600;")
+        value_font = QFont(base)
+        value_font.setPointSizeF(base.pointSizeF() * 1.5)
+        value_font.setBold(True)
+        self.value.setFont(value_font)
         self.value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.value.setAccessibleName(caption)
         layout.addWidget(self.caption)
         layout.addWidget(self.value)
+        self._set("—", None)
+
+    def _set(self, text: str, colour: QColor | None) -> None:
+        self.value.setText(text)
+        palette = self.value.palette()
+        palette.setColor(
+            QPalette.ColorRole.WindowText,
+            colour if colour is not None else self.palette().color(QPalette.ColorRole.WindowText),
+        )
+        self.value.setPalette(palette)
+        self.value.setAccessibleName(f"{self.caption_text}: {text}")
 
     def show_pl(self, amount: int) -> None:
-        self.value.setText(pl_text(amount))
-        colour = pl_colour(amount)
-        self.value.setStyleSheet(
-            "font-size: 18px; font-weight: 600;"
-            + (f" color: {colour.name()};" if colour is not None else "")
-        )
+        self._set(pl_text(amount), pl_colour(amount))
 
     def show_text(self, text: str) -> None:
-        self.value.setText(text)
-        self.value.setStyleSheet("font-size: 18px; font-weight: 600;")
+        self._set(text, None)
 
 
 class SummaryStrip(QWidget):
@@ -97,6 +112,7 @@ class BookmakerTable(QTableWidget):
         self.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.horizontalHeader().setStretchLastSection(True)
         self.setAccessibleName("Realised profit per bookmaker")
+        self.setTabKeyNavigation(False)
 
     def show_summary(self, summary: Summary) -> None:
         rows = sorted(summary.realised_by_bookmaker.items(), key=lambda kv: kv[1])

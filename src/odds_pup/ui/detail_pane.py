@@ -45,6 +45,7 @@ def _table(headers: tuple[str, ...], name: str) -> QTableWidget:
     table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
     table.horizontalHeader().setStretchLastSection(True)
     table.setAccessibleName(name)
+    table.setTabKeyNavigation(False)  # Tab leaves the table; arrows move within it
     return table
 
 
@@ -63,7 +64,6 @@ class DetailPane(QWidget):
         self.header = QLabel("Select a bet to see its legs and history.")
         self.header.setWordWrap(True)
         self.header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.header.setAccessibleName("Bet summary")
         self.legs = _table(LEG_HEADERS, "Legs of the selected bet")
         self.legs.horizontalHeader().setStretchLastSection(False)
         self.audit = _table(AUDIT_HEADERS, "History of the selected bet")

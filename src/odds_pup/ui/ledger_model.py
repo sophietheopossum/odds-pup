@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QPersistentModelIndex,
+    QSortFilterProxyModel,
+    Qt,
+)
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -191,3 +197,23 @@ class LedgerModel(QAbstractTableModel):
         if bet.notes:
             lines.append(bet.notes)
         return "\n".join(lines)
+
+
+class LedgerProxy(QSortFilterProxyModel):
+    """Sorts on the columns' Python sort keys.
+
+    Qt cannot compare datetimes, Decimals or ints wider than 32 bits once they are wrapped in a
+    QVariant, so the default ``lessThan`` left the Placed and odds columns unsorted and scrambled
+    Actual. Ties fall back to placement time so the order is stable.
+    """
+
+    def lessThan(self, left: _ModelIndex, right: _ModelIndex) -> bool:  # noqa: N802
+        model = self.sourceModel()
+        if not isinstance(model, LedgerModel):
+            return super().lessThan(left, right)
+        column = COLUMNS[left.column()]
+        a, b = model.bet_at(left.row()), model.bet_at(right.row())
+        key_a, key_b = column.sort_key(a), column.sort_key(b)
+        if key_a != key_b:
+            return bool(key_a < key_b)
+        return (a.placed_at, a.id) < (b.placed_at, b.id)
