@@ -135,7 +135,11 @@ AuditKind   CREATED | EDITED | SETTLED | REOPENED | ADJUSTMENT | CORRECTION | DE
 
 Venue: `id, name (unique, case-insensitive), kind, default_commission_bp, min_stake_pence,
 ladder ('BETFAIR' or null)`. Seeded with common UK bookmakers and exchanges; new names typed into the
-form create venues on the fly. Offer: `id, venue_id, title, notes`. Both are minimal in v0.1.
+form create venues on the fly (a lay at an unknown name creates an exchange, anything else a
+bookmaker). Venues can be renamed (legs refer to them by id, so a typo is fixed on every bet), have
+their defaults changed, change kind only while nothing refers to them, and be deleted only while
+nothing refers to them. Venue changes are not part of any bet's audit trail. Offer:
+`id, venue_id, title, notes`. Both are minimal in v0.1.
 
 ---
 
@@ -410,11 +414,16 @@ Soft-deleted bets keep their status but are excluded from views and totals.
 |---|---|---|---|
 | Create | always | legs PENDING (or results given for backfill) | CREATED |
 | Edit parameters | status OPEN | legs/header changed, `expected_pl_pence` recomputed | EDITED |
-| Correct parameters | status not OPEN | legs/header changed (odds, stakes, venues, text; a leg's `result` is not a correctable field, use Reopen); the live P/L vector and, on settlement, `actual_pl_pence` follow the corrected legs; `expected_pl_pence` is **never** changed after the bet has left OPEN | CORRECTION |
+| Correct parameters | status not OPEN | legs/header changed (type, odds, stakes, venues, text, and `settled_at` on a SETTLED or VOID bet); a leg's `result` is not correctable and a correction that tries is refused (use Reopen); legs cannot be added or removed; the live P/L vector and `actual_pl_pence` follow the corrected legs; `expected_pl_pence` is **never** changed after the bet has left OPEN | CORRECTION |
 | Settle | any leg PENDING | leg results set; status, `actual_pl_pence`, `settled_at` recomputed | SETTLED |
 | Reopen | status PARTIALLY_SETTLED, SETTLED or VOID | chosen legs back to PENDING; `actual_pl_pence`, `settled_at` and the override cleared if set. Reopen is the only way to change a recorded leg result. | REOPENED |
 | Adjust | status SETTLED or VOID | `actual_pl_override_pence` set with reason | ADJUSTMENT |
+| Flag for review | not deleted, any status | `needs_review` toggled | EDITED (field `needs_review`) |
 | Soft delete / restore | any | `deleted_at` set / cleared | DELETED / RESTORED |
+
+A change that alters nothing (same values, or timestamps equal to the second) writes nothing: no
+audit row, no new leg ids, no `updated_at` bump. Every action on a soft-deleted bet other than
+restore is refused.
 
 There is no `CANCELLED` status. A bet that was never placed is soft-deleted; a voided market is
 `VOID`; a one-sided void is a `VOID` result on one leg.
@@ -438,10 +447,18 @@ as the stored text form (pence as integers, odds as decimal strings, timestamps 
 
 ### 11.1 Engine and connection
 
-Standard-library `sqlite3`, one connection owned by the storage layer, one transaction per user
-action. Per connection: `PRAGMA foreign_keys = ON`, `PRAGMA synchronous = FULL`,
-`PRAGMA busy_timeout = 5000`. Once per database: `PRAGMA journal_mode = WAL`. Tables are `STRICT`.
-No default adapters or converters: timestamps are written and read as text explicitly.
+Standard-library `sqlite3`, one connection owned by the storage layer, one `BEGIN IMMEDIATE`
+transaction per user action. The bet is read and the action's legality checked **inside** that
+transaction, never before it. Per connection: `PRAGMA foreign_keys = ON`,
+`PRAGMA synchronous = FULL`, `PRAGMA busy_timeout = 5000`. Once per database, after the version
+check: `PRAGMA journal_mode = WAL`, waiting up to the busy timeout. Tables are `STRICT`. No default
+adapters or converters: timestamps are written and read as text explicitly.
+
+Errors: storage methods raise only `CoreError` subclasses (bad input) or `StorageError` subclasses.
+Raw sqlite3 errors are translated: busy or locked becomes `DatabaseBusyError`, disk or size limit full
+becomes `DiskFullError`, not a database or malformed becomes `CorruptDatabaseError`, a failed
+migration becomes `MigrationError`, constraint failures become `StorageError`. A rollback after SQLite
+has already rolled back never replaces the original error.
 
 ### 11.2 Schema (version 1)
 
@@ -547,31 +564,41 @@ Bets are never hard-deleted by the app (soft delete only). The foreign keys take
 
 ### 11.3 Migrations
 
-`PRAGMA user_version` holds the schema version. Forward-only migrations, each in one transaction.
-Before any migration runs, a backup is taken (§11.5). If the file's `user_version` is **newer**
-than the app knows, the app refuses to open it with a clear message rather than touching it.
+`PRAGMA user_version` holds the schema version. It is read before anything writes to the file
+(before the WAL switch). If it is **newer** than the app knows, the app refuses to open the file and
+leaves it byte-for-byte untouched. Forward-only migrations, each in one transaction. Before any
+migration of an existing database runs, a backup is taken (§11.5). A failed migration is rolled back,
+the connection is closed and the lock released.
 
 ### 11.4 Location and permissions
 
 Data directory: `platformdirs.user_data_dir("odds-pup")` (`~/.local/share/odds-pup` on Linux),
-overridable by `--data-dir` or `ODDS_PUP_DATA_DIR`. Files: `odds-pup.sqlite3` (+ `-wal`, `-shm`),
-`backups/`, `odds-pup.lock`. The directory is created `0700`, database and backups `0600`.
+overridable by `--data-dir` or `ODDS_PUP_DATA_DIR` (in that order of precedence). Files:
+`odds-pup.sqlite3` (+ `-wal`, `-shm`), `backups/`, `odds-pup.lock`. Directories are `0700`; the
+database, its sidecars, backups, the lock file and CSV exports are `0600`. Existing files with looser
+permissions are tightened on open, and the database is tightened before WAL is enabled so SQLite
+creates the sidecars with the same mode.
 
 ### 11.5 Backups
 
-On startup and before every migration: `VACUUM INTO 'backups/odds-pup-YYYYMMDD-HHMMSS.sqlite3'`,
-then keep the newest 10. Settings show the path so the user can copy it elsewhere.
+On startup and before every migration: `VACUUM INTO 'backups/odds-pup-YYYYMMDD-HHMMSS.sqlite3'`
+(UTC stamp; `-1`, `-2` … for more than one in a second, ordered after the unsuffixed name). `VACUUM
+INTO` does not fsync, so the copy and the directory are fsynced before anything is pruned; then the
+newest 10 are kept. The About box shows the data folder so the user can copy backups elsewhere.
 
 ### 11.6 Single instance
 
-`odds-pup.lock` in the data directory, held with `fcntl.flock` for the life of the process. A second
-launch against the same directory reports that the ledger is already open and exits. Tests use a
-temporary `--data-dir`, so they never collide.
+`odds-pup.lock` in the data directory, held with `fcntl.flock`. `Repository.open` takes it before
+connecting and `close` releases it, so two repositories can never write one ledger, even in one
+process; the kernel releases it if the process dies. A second launch reports that the ledger is
+already open and exits. Tests use a temporary `--data-dir`, so they never collide.
 
 ### 11.7 CSV export (v0.1) and import (later)
 
 Export writes the currently filtered ledger, one row per leg joined with its bet header, UTF-8,
-comma-separated, header row first. Money columns are 2 dp strings, odds are decimal strings,
+comma-separated, header row first. The query runs before the file is opened and the file is written
+to a temporary sibling then renamed, so a failure never leaves a truncated export or destroys an
+existing one. A `deleted` column marks soft-deleted bets when they are included. Money columns are 2 dp strings, odds are decimal strings,
 timestamps UTC. The first column is `odds_pup_schema_version` (constant per file) so an old export
 stays importable once import exists. Import is deferred until a real sample sheet is available.
 
@@ -580,6 +607,10 @@ stays importable once import exists. Import is deferred until a real sample shee
 ## 12. Time and locale
 
 - Store every timestamp as UTC text `YYYY-MM-DDTHH:MM:SSZ` (fixed width, explicit `Z`).
+- Timestamps given to storage must be timezone-aware; naive values (which Qt returns) are refused
+  with a `ValidationError` rather than guessed at in the system zone. Local calendar-day filters use
+  `local_date_range(first, last)`, which returns `[start of first, start of the day after last)` in
+  UTC.
 - Display in local time (Europe/London). Period summaries ("this month") bucket by the **local**
   calendar date of `settled_at` (realised) or `placed_at` (open). A bet settled at 00:30 BST on
   1 September is 23:30Z on 31 August and must count in September.
@@ -597,7 +628,10 @@ stays importable once import exists. Import is deferred until a real sample shee
   back odds, lay stake, lay odds, expected, actual, status, badges (adjusted, needs review).
   P/L cells carry an explicit sign; colour is secondary.
 - **Summary strip**: realised all-time, realised this month, open guaranteed P/L, open liability per
-  exchange, per-bookmaker realised table. All derived by query after each committed transaction.
+  exchange, per-bookmaker realised table. All derived by query after each committed transaction;
+  changing a filter re-queries only the ledger. Search is debounced (250 ms; Enter applies at once).
+- **Bookmakers and exchanges** (Settings menu): rename, set default commission, minimum lay stake
+  and price ladder, add, and delete unused venues.
 - **New bet**: type selector, event, selection, bookmaker (autocomplete, creates venues), back
   stake, back odds (decimal or fraction), exchange (remembers last, pre-fills its commission),
   lay odds, lay stake (pre-filled with `L*`, editable), live panel showing liability, P/L if back
@@ -655,6 +689,7 @@ All decided 2026-09-12 with the developer, taking the recommended defaults.
 | D10 | Offers: nullable `offer_id` and `parent_bet_id` plus a minimal offers table. Bankroll and account balances out of scope for v0.1. |
 | D11 | No existing data to import. CSV export in v0.1; import when a sample sheet exists. Backfill of settled bets with past dates supported in the New Bet form. |
 | D12 | Housekeeping first: short CLAUDE.md pointing here, README, MIT LICENSE, .gitignore excluding ledger files; data in the XDG data dir with 0600 permissions, single-instance lock, rotating backups, zero network. Agent commits on feature branches; the developer signs and merges. Git author name follows the current config (Sophie). |
+| D15 | 2026-09-13, after adversarial review of storage: legality checks run inside the write transaction; `Repository.open` holds the instance lock; version checked before any write; raw sqlite3 errors translated into `StorageError` subclasses; existing files tightened to 0600; backups fsynced before pruning; atomic CSV export; naive timestamps refused; bet type and `settled_at` correctable; review flag allowed in any non-deleted status; venues renamable and deletable while unused; venue filters use a non-correlated subquery (the correlated form took ~10 s at 10k bets). |
 | D14 | 2026-09-13, after adversarial review of the core: odds capped at 10000 and money at £10bn as precision guards; venue grouping key is the trimmed, case-folded name; book percentage computed exactly; the Settle helper is leg-based with outcomes BACK_WON / LAY_WON / VOID and refuses to overwrite a recorded result; commission percent parsing lives in core. |
 | D13 | Commission is netted per venue within a bet (an approximation of the per-market netting exchanges apply; bets are not netted against each other in v0.1). For a single lay leg this equals the per-bet formula up to the F16 rounding; it matters for §16.1. |
 

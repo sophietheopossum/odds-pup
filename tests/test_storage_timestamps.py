@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
+from odds_pup.core import ValidationError
 from odds_pup.storage import (
     StorageError,
     from_db,
@@ -28,9 +29,32 @@ def test_from_db_round_trips_and_rejects_other_forms():
             from_db(bad)
 
 
-def test_naive_datetimes_are_rejected():
-    with pytest.raises(StorageError):
-        to_db(datetime(2026, 9, 1))
+def test_naive_datetimes_are_rejected_everywhere():
+    naive = datetime(2026, 9, 1, 0, 30)
+    for fn in (to_db, to_local, local_date, local_month_bounds):
+        with pytest.raises(ValidationError):
+            fn(naive)
+    with pytest.raises(ValidationError):
+        to_db("2026-09-01T00:30:00Z")  # type: ignore[arg-type]
+
+
+def test_from_db_rejects_impossible_dates_as_storage_errors():
+    for bad in ("2026-13-01T00:00:00Z", "2026-02-30T00:00:00Z", "2026-09-12T25:00:00Z"):
+        with pytest.raises(StorageError):
+            from_db(bad)
+
+
+def test_local_day_helpers_follow_london_time():
+    from datetime import date
+
+    from odds_pup.storage import local_date_range, local_day_start
+
+    assert to_db(local_day_start(date(2026, 9, 2))) == "2026-09-01T23:00:00Z"
+    assert to_db(local_day_start(date(2026, 1, 2))) == "2026-01-02T00:00:00Z"
+    start, end = local_date_range(date(2026, 10, 24), date(2026, 10, 25))  # clocks go back 25 Oct
+    assert (to_db(start), to_db(end)) == ("2026-10-23T23:00:00Z", "2026-10-26T00:00:00Z")
+    with pytest.raises(ValidationError):
+        local_day_start(datetime(2026, 9, 2, tzinfo=UTC))
 
 
 def test_utc_now_is_aware_whole_seconds():

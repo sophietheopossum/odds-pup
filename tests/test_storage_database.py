@@ -118,3 +118,14 @@ def test_audit_table_is_append_only(repo: Repository):
             " ('a', ?, 'act', '2026-09-12T00:00:00Z', 'ADJUSTMENT', NULL)",
             (bet.id,),
         )
+
+
+def test_spec_ddl_matches_the_shipped_schema():
+    import re
+
+    from odds_pup.storage.schema import DDL_V1
+
+    spec = (Path(__file__).resolve().parents[1] / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    match = re.search(r"```sql\n(.*?)```", spec, re.S)
+    assert match is not None
+    assert match[1].strip() == DDL_V1.strip()

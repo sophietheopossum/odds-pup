@@ -1,18 +1,31 @@
 """SQLite persistence, migrations, backups and CSV export. No Qt."""
 
+from odds_pup.core import AuditKind
 from odds_pup.storage.backup import BACKUP_KEEP, create_backup, list_backups
-from odds_pup.storage.database import connect, migrate, schema_version, transaction
+from odds_pup.storage.database import (
+    check_version,
+    connect,
+    enable_wal,
+    migrate,
+    schema_version,
+    transaction,
+)
 from odds_pup.storage.errors import (
     AlreadyRunningError,
+    CorruptDatabaseError,
+    DatabaseBusyError,
+    DiskFullError,
     IllegalActionError,
+    MigrationError,
     NewerDatabaseError,
     NotFoundError,
     StorageError,
 )
-from odds_pup.storage.export import CSV_COLUMNS, export_csv, write_csv
+from odds_pup.storage.export import CSV_COLUMNS, export_csv, write_csv, write_rows
 from odds_pup.storage.lock import InstanceLock
 from odds_pup.storage.models import (
     AuditRow,
+    AuditValueKind,
     BetFilter,
     BetRecord,
     LegRecord,
@@ -21,6 +34,7 @@ from odds_pup.storage.models import (
     Offer,
     Summary,
     Venue,
+    audit_value_kind,
 )
 from odds_pup.storage.paths import DataPaths, prepare, resolve_data_dir
 from odds_pup.storage.repository import OPEN_STATUSES, SETTLED_STATUSES, UNSET, Repository
@@ -29,7 +43,10 @@ from odds_pup.storage.timestamps import (
     LOCAL_ZONE,
     from_db,
     local_date,
+    local_date_range,
+    local_day_start,
     local_month_bounds,
+    require_aware,
     to_db,
     to_local,
     utc_now,
@@ -45,13 +62,19 @@ __all__ = [
     "SETTLED_STATUSES",
     "UNSET",
     "AlreadyRunningError",
+    "AuditKind",
     "AuditRow",
+    "AuditValueKind",
     "BetFilter",
     "BetRecord",
+    "CorruptDatabaseError",
     "DataPaths",
+    "DatabaseBusyError",
+    "DiskFullError",
     "IllegalActionError",
     "InstanceLock",
     "LegRecord",
+    "MigrationError",
     "NewBet",
     "NewLeg",
     "NewerDatabaseError",
@@ -61,15 +84,21 @@ __all__ = [
     "StorageError",
     "Summary",
     "Venue",
+    "audit_value_kind",
+    "check_version",
     "connect",
     "create_backup",
+    "enable_wal",
     "export_csv",
     "from_db",
     "list_backups",
     "local_date",
+    "local_date_range",
+    "local_day_start",
     "local_month_bounds",
     "migrate",
     "prepare",
+    "require_aware",
     "resolve_data_dir",
     "schema_version",
     "to_db",
@@ -77,4 +106,5 @@ __all__ = [
     "transaction",
     "utc_now",
     "write_csv",
+    "write_rows",
 ]

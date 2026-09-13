@@ -1,8 +1,10 @@
-"""Records the repository reads and writes. SPEC §3."""
+"""Records the repository reads and writes. SPEC §3, §10."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from odds_pup.core import (
@@ -62,6 +64,25 @@ class NewLeg:
     settled_amount: Pence | None = None
     odds_text: str | None = None
 
+    @classmethod
+    def from_leg(cls, leg: Leg, *, keep_result: bool = False) -> NewLeg:
+        """Input for ``leg`` with its commission snapshot kept explicit (not the venue default).
+
+        Results are dropped unless ``keep_result`` (backfill from a settled core leg).
+        """
+        return cls(
+            side=leg.side,
+            venue=leg.venue,
+            odds=leg.odds,
+            stake=leg.stake,
+            selection=leg.selection,
+            stake_kind=leg.stake_kind,
+            commission_bp=leg.commission_bp,
+            result=leg.result if keep_result else LegResult.PENDING,
+            settled_amount=leg.settled_amount if keep_result else None,
+            odds_text=leg.odds_text,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class NewBet:
@@ -80,6 +101,22 @@ class NewBet:
     settled_at: datetime | None = None
     notes: str = ""
     needs_review: bool = False
+
+    @classmethod
+    def from_record(cls, bet: BetRecord) -> NewBet:
+        """A fresh, unsettled copy of ``bet`` for Clone (SPEC §13): new id and placement time."""
+        return cls(
+            bet_type=bet.bet_type,
+            event_name=bet.event_name,
+            legs=[NewLeg.from_leg(record.leg) for record in bet.legs],
+            selection=bet.selection,
+            market=bet.market,
+            market_outcomes=bet.market_outcomes,
+            offer_id=bet.offer_id,
+            parent_bet_id=bet.parent_bet_id,
+            event_at=bet.event_at,
+            notes=bet.notes,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +233,8 @@ class BetFilter:
     offer_id: str | None = None
     needs_review: bool | None = None
     include_deleted: bool = False
+    limit: int | None = None
+    """Newest ``limit`` bets only (after the other filters)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,3 +248,60 @@ class Summary:
     realised_by_bookmaker: dict[str, Pence] = field(default_factory=dict)
     open_count: int = 0
     settled_count: int = 0
+
+
+class AuditValueKind(StrEnum):
+    """How to read an audit row's old/new text (SPEC §10 stores the stored text form)."""
+
+    NONE = "NONE"
+    TEXT = "TEXT"
+    MONEY = "MONEY"
+    ODDS = "ODDS"
+    COMMISSION = "COMMISSION"
+    TIMESTAMP = "TIMESTAMP"
+    FLAG = "FLAG"
+    COUNT = "COUNT"
+    ENUM = "ENUM"
+
+
+_LEG_FIELD = re.compile(r"^legs\[(\d+)\](?:\.(\w+))?$", re.ASCII)
+_HEADER_KINDS: dict[str, AuditValueKind] = {
+    "bet_type": AuditValueKind.ENUM,
+    "event_name": AuditValueKind.TEXT,
+    "selection": AuditValueKind.TEXT,
+    "market": AuditValueKind.TEXT,
+    "notes": AuditValueKind.TEXT,
+    "offer_id": AuditValueKind.TEXT,
+    "parent_bet_id": AuditValueKind.TEXT,
+    "market_outcomes": AuditValueKind.COUNT,
+    "placed_at": AuditValueKind.TIMESTAMP,
+    "event_at": AuditValueKind.TIMESTAMP,
+    "settled_at": AuditValueKind.TIMESTAMP,
+    "deleted_at": AuditValueKind.TIMESTAMP,
+    "expected_pl_pence": AuditValueKind.MONEY,
+    "actual_pl_override_pence": AuditValueKind.MONEY,
+    "needs_review": AuditValueKind.FLAG,
+    "status": AuditValueKind.ENUM,
+}
+_LEG_KINDS: dict[str, AuditValueKind] = {
+    "side": AuditValueKind.ENUM,
+    "venue": AuditValueKind.TEXT,
+    "odds": AuditValueKind.ODDS,
+    "stake": AuditValueKind.MONEY,
+    "selection": AuditValueKind.COUNT,
+    "stake_kind": AuditValueKind.ENUM,
+    "commission_bp": AuditValueKind.COMMISSION,
+    "odds_text": AuditValueKind.TEXT,
+    "result": AuditValueKind.ENUM,
+    "settled_amount": AuditValueKind.MONEY,
+}
+
+
+def audit_value_kind(field: str | None) -> AuditValueKind:
+    """The kind of value an audit row for ``field`` carries, for display."""
+    if field is None:
+        return AuditValueKind.NONE
+    match = _LEG_FIELD.match(field)
+    if match is not None:
+        return _LEG_KINDS.get(match[2] or "", AuditValueKind.TEXT)
+    return _HEADER_KINDS.get(field, AuditValueKind.TEXT)
