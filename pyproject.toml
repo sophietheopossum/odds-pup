@@ -56,7 +56,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN", "PLR", "PT011"]
+"tests/**" = ["ANN", "PLR", "PT011", "TC", "PLC0415"]
+"src/odds_pup/ui/**" = ["PLR0915", "PLR0911"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -82,3 +83,4 @@ disallow_untyped_defs = true
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
 xfail_strict = true
+qt_api = "pyside6"
