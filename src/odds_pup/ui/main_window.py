@@ -61,6 +61,8 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 SEARCH_DEBOUNCE_MS = 250
+DEFAULT_SIZE = (1440, 880)
+MAX_COLUMN_WIDTH = 280
 PARENT_CANDIDATES = 50
 
 STATUS_CHOICES: tuple[tuple[str, frozenset[BetStatus] | None], ...] = (
@@ -105,11 +107,14 @@ class MainWindow(QMainWindow):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(SEARCH_DEBOUNCE_MS)
         self._search_timer.timeout.connect(self.refresh_ledger)
+        self._columns_sized = False
         self._build()
         self._build_actions()
         self.refresh()
         geometry = self.settings.geometry()
-        if not geometry.isEmpty():
+        if geometry.isEmpty():
+            self.resize(*DEFAULT_SIZE)
+        else:
             self.restoreGeometry(geometry)
         state = self.settings.window_state()
         if not state.isEmpty():
@@ -153,6 +158,7 @@ class MainWindow(QMainWindow):
         self.search.setPlaceholderText("Search event, selection, market, notes")
         self.search.setClearButtonEnabled(True)
         self.search.setAccessibleName("Search")
+        self.search.setMinimumWidth(240)
         self.review_only = QCheckBox("Needs review")
         self.review_only.setAccessibleName("Show only bets flagged for review")
         self.show_deleted = QCheckBox("Show deleted")
@@ -180,6 +186,7 @@ class MainWindow(QMainWindow):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setMaximumSectionSize(MAX_COLUMN_WIDTH)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setAccessibleName("Ledger")
@@ -198,6 +205,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.bookmaker_table = BookmakerTable()
+        self.bookmaker_table.setMinimumWidth(240)
         dock = QDockWidget("By bookmaker", self)
         dock.setObjectName("bookmakerDock")
         dock.setWidget(self.bookmaker_table)
@@ -325,6 +333,9 @@ class MainWindow(QMainWindow):
             self._report(exc)
             return
         self.model.set_bets(bets)
+        if bets and not self._columns_sized:
+            self.table.resizeColumnsToContents()
+            self._columns_sized = True
         self.status_label.setText(f"{len(bets)} bet(s) shown")
         if selected is not None:
             self.select_bet(selected)

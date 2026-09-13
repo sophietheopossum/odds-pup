@@ -205,7 +205,9 @@ class BetDialog(QDialog):
         form.addRow("E&xchange", self.exchange)
         form.addRow("&Commission %", self.commission)
         form.addRow("Lay o&dds", self.lay_odds)
-        form.addRow("Lay sta&ke £", lay_row)
+        lay_label = QLabel("Lay sta&ke £")
+        lay_label.setBuddy(self.lay_stake)
+        form.addRow(lay_label, lay_row)
 
         self.offer = QComboBox()
         self.offer.addItem("(none)", None)
@@ -539,10 +541,15 @@ class _LegRow:
         for result, label in RESULT_LABELS.items():
             self.result.addItem(label, result)
         self.result.setAccessibleName(f"Result of leg {index + 1}")
-        self.amount = _line(
-            f"Amount for leg {index + 1}",
-            "return credited (£)" if leg.side is Side.BACK else "net P/L shown by the exchange (£)",
+        back = leg.side is Side.BACK
+        self.amount = _line(f"Amount for leg {index + 1}", "return £" if back else "net P/L £")
+        self.amount.setToolTip(
+            "The return the bookmaker credited, including your stake (a £10 bet paid out early "
+            "at 2.00 returns £20)."
+            if back
+            else "The cash-out profit or loss the exchange shows for this leg."
         )
+        self.amount.setMinimumWidth(110)
         self.amount.setEnabled(False)
         self.result.currentIndexChanged.connect(self._toggle_amount)
 

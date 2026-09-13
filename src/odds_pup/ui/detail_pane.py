@@ -65,12 +65,22 @@ class DetailPane(QWidget):
         self.header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.header.setAccessibleName("Bet summary")
         self.legs = _table(LEG_HEADERS, "Legs of the selected bet")
+        self.legs.horizontalHeader().setStretchLastSection(False)
         self.audit = _table(AUDIT_HEADERS, "History of the selected bet")
         layout.addWidget(self.header)
         layout.addWidget(QLabel("Legs"))
-        layout.addWidget(self.legs, 1)
+        layout.addWidget(self.legs)
         layout.addWidget(QLabel("History"))
         layout.addWidget(self.audit, 1)
+        self._fit_legs(3)
+
+    def _fit_legs(self, rows: int) -> None:
+        """Size the legs table to its rows (at least two) so history gets the rest."""
+        row_height = self.legs.verticalHeader().defaultSectionSize()
+        header = self.legs.horizontalHeader().sizeHint().height()
+        frame = 2 * self.legs.frameWidth()
+        scrollbar = self.legs.horizontalScrollBar().sizeHint().height()
+        self.legs.setFixedHeight(header + max(rows, 2) * row_height + frame + scrollbar)
 
     def clear(self) -> None:
         self.header.setText("Select a bet to see its legs and history.")
@@ -101,6 +111,7 @@ class DetailPane(QWidget):
         self.header.setText("<br>".join(bits))
 
         self.legs.setRowCount(len(bet.legs))
+        self._fit_legs(min(len(bet.legs), 6))
         for row, record in enumerate(bet.legs):
             leg = record.leg
             net = "" if leg.settled_amount is None else pl_text(leg.settled_amount)
