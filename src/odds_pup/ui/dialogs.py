@@ -349,15 +349,18 @@ class BetDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
 
     def _apply_settings(self, settings: UiSettings) -> None:
-        """Prefill the last venues used, but only while they still exist (they may be renamed)."""
+        """Prefill the last venues used, but only while they still exist (they may be renamed).
+
+        The commission comes from the exchange's current default (set in Settings), never from
+        the last bet: a remembered rate would silently outlive a changed default.
+        """
         bookmaker = self._venues.get(settings.last_bookmaker.strip().casefold())
         if bookmaker is not None:
             self.bookmaker.setCurrentText(bookmaker.name)
         exchange = self._venues.get(settings.last_exchange.strip().casefold())
         if exchange is not None and exchange.kind is VenueKind.EXCHANGE:
             self.exchange.setCurrentText(exchange.name)
-            if settings.last_commission_bp is not None:
-                self.commission.setText(format_commission(settings.last_commission_bp).rstrip("%"))
+            self.commission.setText(format_commission(exchange.default_commission_bp).rstrip("%"))
 
     def _apply_prefill(self, bet: BetRecord) -> None:
         backs, lays = bet.back_legs, bet.lay_legs
@@ -557,7 +560,6 @@ class BetDialog(QDialog):
         if self._settings is not None and self.mode is BetDialogMode.NEW and not self._prefilled:
             self._settings.last_bookmaker = self.bookmaker.currentText().strip()
             self._settings.last_exchange = self.exchange.currentText().strip()
-            self._settings.last_commission_bp = result.bet.legs[1].commission_bp or 0
         self.accept()
 
 

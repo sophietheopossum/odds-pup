@@ -12,7 +12,10 @@ from hypothesis import HealthCheck, settings
 from odds_pup.storage import DataPaths, Repository
 from tests.storage_helpers import FakeClock
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Tests must never open windows on the developer's desktop, whatever the session sets
+# (e.g. QT_QPA_PLATFORM=wayland;xcb), so this is forced rather than defaulted.
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ.pop("WAYLAND_DISPLAY", None)
 
 settings.register_profile("ci", max_examples=300, suppress_health_check=[HealthCheck.too_slow])
 settings.register_profile("quick", max_examples=50)

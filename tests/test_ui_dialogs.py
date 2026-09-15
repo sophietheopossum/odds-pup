@@ -155,7 +155,6 @@ def test_bet_dialog_settings_roundtrip(qtbot, repo: Repository, ui_settings, clo
     dialog.save_button.click()
     assert dialog.result_value is not None
     assert ui_settings.last_exchange == "Smarkets"
-    assert ui_settings.last_commission_bp == 200
     again = BetDialog(venues=repo.list_venues(), settings=ui_settings, clock=clock)
     qtbot.addWidget(again)
     assert again.exchange.currentText() == "Smarkets"

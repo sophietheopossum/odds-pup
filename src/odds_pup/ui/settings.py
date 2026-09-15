@@ -21,20 +21,6 @@ class UiSettings:
         self._s.setValue("newbet/exchange", name)
 
     @property
-    def last_commission_bp(self) -> int | None:
-        raw = self._s.value("newbet/commission_bp", None)
-        if raw is None or raw == "":
-            return None
-        try:
-            return int(str(raw))
-        except ValueError:
-            return None
-
-    @last_commission_bp.setter
-    def last_commission_bp(self, bp: int) -> None:
-        self._s.setValue("newbet/commission_bp", int(bp))
-
-    @property
     def last_bookmaker(self) -> str:
         return str(self._s.value("newbet/bookmaker", "", type=str))
 

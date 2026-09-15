@@ -206,7 +206,6 @@ def test_clone_lists_its_source_as_a_possible_parent(qtbot, window: MainWindow, 
 def test_settings_follow_new_bets_only_and_skip_renamed_venues(qtbot, repo, ui_settings):
     ui_settings.last_bookmaker = "Bet365"
     ui_settings.last_exchange = "Smarkets"
-    ui_settings.last_commission_bp = 150
     bet = repo.create_bet(
         f1_bet(
             legs=[
@@ -220,7 +219,7 @@ def test_settings_follow_new_bets_only_and_skip_renamed_venues(qtbot, repo, ui_s
     )
     qtbot.addWidget(edit)
     edit.save_button.click()
-    assert (ui_settings.last_exchange, ui_settings.last_commission_bp) == ("Smarkets", 150)
+    assert ui_settings.last_exchange == "Smarkets"
     smarkets = repo.find_venue("Smarkets")
     assert smarkets is not None
     repo.update_venue(smarkets.id, name="Smarkets Exchange")
@@ -340,3 +339,24 @@ def test_enter_on_a_venue_edits_it(qtbot, repo: Repository, monkeypatch: pytest.
     assert edited == ["edit"]
     assert added == []
     assert not dialog.add_button.autoDefault()
+
+
+def test_new_bet_uses_the_exchange_default_not_the_last_rate(qtbot, repo: Repository, ui_settings):
+    ui_settings.last_exchange = "Betfair Exchange"
+    first = BetDialog(venues=repo.list_venues(), settings=ui_settings)
+    qtbot.addWidget(first)
+    assert first.commission.text() == "5"
+    betfair = repo.find_venue("Betfair Exchange")
+    assert betfair is not None
+    repo.update_venue(betfair.id, default_commission_bp=200)  # the user sets their real rate
+    second = BetDialog(venues=repo.list_venues(), settings=ui_settings)
+    qtbot.addWidget(second)
+    assert second.exchange.currentText() == "Betfair Exchange"
+    assert second.commission.text() == "2"
+
+
+def test_tests_never_use_the_desktop_display():
+    import os
+
+    assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
+    assert QApplication.platformName() == "offscreen"
